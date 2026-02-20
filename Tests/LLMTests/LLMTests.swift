@@ -63,7 +63,7 @@ private indirect enum TestSchema {
 }
 
 extension Generatable {
-    static func schema(_ schema: TestSchema) -> String {
+    fileprivate static func schema(_ schema: TestSchema) -> String {
         schema.jsonString
     }
 }

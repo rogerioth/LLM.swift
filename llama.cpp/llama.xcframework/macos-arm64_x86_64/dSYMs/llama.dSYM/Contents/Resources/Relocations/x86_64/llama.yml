@@ -3775,17 +3775,17 @@ relocations:
   - { offset: 0x15227DC, size: 0x8, addend: 0x0, symName: __GLOBAL__sub_I_ggml_threading.cpp, symObjAddr: 0x40, symBinAddr: 0x1C4E70, symSize: 0x1F }
   - { offset: 0x1524721, size: 0x8, addend: 0x0, symName: _ggml_print_backtrace, symObjAddr: 0x0, symBinAddr: 0x1C4E90, symSize: 0x1E0 }
   - { offset: 0x15247A3, size: 0x8, addend: 0x0, symName: _ggml_init, symObjAddr: 0x1B70, symBinAddr: 0x1C6A00, symSize: 0x1F0 }
-  - { offset: 0x15247CB, size: 0x8, addend: 0x0, symName: _ggml_init.is_first_call, symObjAddr: 0x9AAC0, symBinAddr: 0x3D60A8, symSize: 0x0 }
+  - { offset: 0x15247CB, size: 0x8, addend: 0x0, symName: _ggml_init.is_first_call, symObjAddr: 0x9AAD0, symBinAddr: 0x3D60A8, symSize: 0x0 }
   - { offset: 0x152497B, size: 0x8, addend: 0x0, symName: _ggml_hash_size, symObjAddr: 0x106D0, symBinAddr: 0x1D5560, symSize: 0x60 }
-  - { offset: 0x152499C, size: 0x8, addend: 0x0, symName: _ggml_hash_size.primes, symObjAddr: 0x1B540, symBinAddr: 0x2E61E0, symSize: 0x0 }
-  - { offset: 0x1524A0F, size: 0x8, addend: 0x0, symName: _g_abort_callback, symObjAddr: 0x9AAB8, symBinAddr: 0x3D60A0, symSize: 0x0 }
-  - { offset: 0x1524A48, size: 0x8, addend: 0x0, symName: _type_traits, symObjAddr: 0x1A580, symBinAddr: 0x331020, symSize: 0x0 }
-  - { offset: 0x1524B7E, size: 0x8, addend: 0x0, symName: _GGML_OP_NAME, symObjAddr: 0x1AE40, symBinAddr: 0x3318E0, symSize: 0x0 }
-  - { offset: 0x1524BA3, size: 0x8, addend: 0x0, symName: _GGML_OP_SYMBOL, symObjAddr: 0x1B140, symBinAddr: 0x331BE0, symSize: 0x0 }
-  - { offset: 0x1524BBA, size: 0x8, addend: 0x0, symName: _GGML_UNARY_OP_NAME, symObjAddr: 0x1B440, symBinAddr: 0x331EE0, symSize: 0x0 }
-  - { offset: 0x1524BDF, size: 0x8, addend: 0x0, symName: _GGML_GLU_OP_NAME, symObjAddr: 0x1B4F0, symBinAddr: 0x331F90, symSize: 0x0 }
-  - { offset: 0x1524C04, size: 0x8, addend: 0x0, symName: _g_logger_state.0, symObjAddr: 0x1B6D8, symBinAddr: 0x334998, symSize: 0x0 }
-  - { offset: 0x1524C0F, size: 0x8, addend: 0x0, symName: _g_logger_state.1, symObjAddr: 0x9AAC8, symBinAddr: 0x3D60B0, symSize: 0x0 }
+  - { offset: 0x152499C, size: 0x8, addend: 0x0, symName: _ggml_hash_size.primes, symObjAddr: 0x1B550, symBinAddr: 0x2E61E0, symSize: 0x0 }
+  - { offset: 0x1524A0F, size: 0x8, addend: 0x0, symName: _g_abort_callback, symObjAddr: 0x9AAC8, symBinAddr: 0x3D60A0, symSize: 0x0 }
+  - { offset: 0x1524A48, size: 0x8, addend: 0x0, symName: _type_traits, symObjAddr: 0x1A590, symBinAddr: 0x331020, symSize: 0x0 }
+  - { offset: 0x1524B7E, size: 0x8, addend: 0x0, symName: _GGML_OP_NAME, symObjAddr: 0x1AE50, symBinAddr: 0x3318E0, symSize: 0x0 }
+  - { offset: 0x1524BA3, size: 0x8, addend: 0x0, symName: _GGML_OP_SYMBOL, symObjAddr: 0x1B150, symBinAddr: 0x331BE0, symSize: 0x0 }
+  - { offset: 0x1524BBA, size: 0x8, addend: 0x0, symName: _GGML_UNARY_OP_NAME, symObjAddr: 0x1B450, symBinAddr: 0x331EE0, symSize: 0x0 }
+  - { offset: 0x1524BDF, size: 0x8, addend: 0x0, symName: _GGML_GLU_OP_NAME, symObjAddr: 0x1B500, symBinAddr: 0x331F90, symSize: 0x0 }
+  - { offset: 0x1524C04, size: 0x8, addend: 0x0, symName: _g_logger_state.0, symObjAddr: 0x1B6E8, symBinAddr: 0x334998, symSize: 0x0 }
+  - { offset: 0x1524C0F, size: 0x8, addend: 0x0, symName: _g_logger_state.1, symObjAddr: 0x9AAD8, symBinAddr: 0x3D60B0, symSize: 0x0 }
   - { offset: 0x152567C, size: 0x8, addend: 0x0, symName: _ggml_print_backtrace, symObjAddr: 0x0, symBinAddr: 0x1C4E90, symSize: 0x1E0 }
   - { offset: 0x15257D8, size: 0x8, addend: 0x0, symName: _ggml_print_backtrace_symbols, symObjAddr: 0x1E0, symBinAddr: 0x1C5070, symSize: 0x60 }
   - { offset: 0x15258C4, size: 0x8, addend: 0x0, symName: _ggml_print_backtrace_symbols, symObjAddr: 0x1E0, symBinAddr: 0x1C5070, symSize: 0x60 }
