@@ -5,11 +5,11 @@ import CompilerPluginSupport
 let package = Package(
     name: "LLM",
     platforms: [
-        .iOS(.v16),
-        .macOS(.v13),
+        .iOS("15.0"),
+        .macOS("13.3"),
         .watchOS(.v9),
-        .tvOS(.v16),
-        .visionOS(.v1)
+        .tvOS("16.4"),
+        .visionOS("1.0")
     ],
     products: [
         .library(

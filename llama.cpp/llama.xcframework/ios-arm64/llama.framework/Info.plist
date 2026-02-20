@@ -19,7 +19,7 @@
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>MinimumOSVersion</key>
-    <string>16.4</string>
+    <string>15.0</string>
     <key>CFBundleSupportedPlatforms</key>
     <array>
         <string>iPhoneOS</string>
@@ -31,6 +31,6 @@
     <key>DTPlatformName</key>
     <string>iphoneos</string>
     <key>DTSDKName</key>
-    <string>iphoneos16.4</string>
+    <string>iphoneos15.0</string>
 </dict>
 </plist>
