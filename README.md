@@ -120,68 +120,94 @@ struct ContentView: View {
 }
 ```
 
-## Structured Output with @Generatable
+## Structured Output with Generatable
 
-The `@Generatable` macro enables **100% reliable** type-safe structured output generation. No more struggling with prompting to get output in the format you want—it works every time and allows true programmatic flow. Simply annotate your Swift structs and enums to automatically generate JSON schemas that guide the model to produce valid, structured responses:
+`Generatable` enables reliable type-safe structured output by letting you define the JSON schema once in Swift, then decode model output directly into your types:
 
 ```swift
-@Generatable
-struct Person {
+struct Person: Codable, Generatable {
     let name: String
     let age: Int
     let occupation: String
     let personality: String
+
+    static let jsonSchema = schema(.object(
+        properties: [
+            "name": .string,
+            "age": .integer,
+            "occupation": .string,
+            "personality": .string
+        ],
+        required: ["name", "age", "occupation", "personality"]
+    ))
 }
 
 let bot = LLM(from: Bundle.main.url(forResource: "model", withExtension: "gguf")!, template: .chatML("You are helpful."))
 let result = try await bot.respond(to: "Create a fictional character", as: Person.self)
-let person = result.value // Guaranteed to be a valid Person struct
-print(person.name) // "Alice"
-print(person.age) // 28
+let person = result.value
+print(person.name)
+print(person.age)
 ```
 
-The macro works with structs, enums, arrays, and supports nested Generatable structures:
+It supports structs, enums, arrays, and nested Generatable structures:
 
 ```swift
-@Generatable
-enum Priority {
+enum Priority: String, Codable, CaseIterable, Generatable {
     case low, medium, high, urgent
 }
 
-@Generatable
-struct Address {
+struct Address: Codable, Generatable {
     let street: String
     let city: String
     let zipCode: String
+
+    static let jsonSchema = schema(.object(
+        properties: [
+            "street": .string,
+            "city": .string,
+            "zipCode": .string
+        ],
+        required: ["street", "city", "zipCode"]
+    ))
 }
 
-@Generatable 
-struct Task {
+struct Task: Codable, Generatable {
     let title: String
     let priority: Priority
-    let assignee: Person // Nested Generatable struct
+    let assignee: Person
+
+    static let jsonSchema = schema(.object(
+        properties: [
+            "title": .string,
+            "priority": .generated(Priority.self),
+            "assignee": .generated(Person.self)
+        ],
+        required: ["title", "priority", "assignee"]
+    ))
 }
 
-@Generatable
-struct Project {
+struct Project: Codable, Generatable {
     let name: String
-    let tasks: [Task] // Arrays of Generatable structs
-    let teamLead: Person // Nested Generatable types
-    let office: Address // Multiple levels of nesting
+    let tasks: [Task]
+    let teamLead: Person
+    let office: Address
+
+    static let jsonSchema = schema(.object(
+        properties: [
+            "name": .string,
+            "tasks": .array(.generated(Task.self)),
+            "teamLead": .generated(Person.self),
+            "office": .generated(Address.self)
+        ],
+        required: ["name", "tasks", "teamLead", "office"]
+    ))
 }
 
 let result = try await bot.respond(to: "Create a software project plan", as: Project.self)
 ```
 
-The macro automatically:
-- Generates JSON schema for structs and enums
-- Adds Codable conformance and CaseIterable for enums
-- Handles nested Generatable structures and arrays
-- Provides automatic validation
-- Returns both the parsed object and raw JSON output
-
-> [!TIP]  
-> Check `LLMTests.swift` for more comprehensive examples and use cases of `@Generatable`.
+> [!TIP]
+> Check `LLMTests.swift` for more examples of nested schemas and structured output.
 
 ## Usage
 Add the package using SPM:
@@ -192,7 +218,7 @@ dependencies: [
 ```
 
 ## Overview
-`LLM.swift` started as a lightweight abstraction layer over [`llama.cpp`](https://github.com/ggerganov/llama.cpp), and has evolved into a comprehensive Swift library with advanced features like `@Generatable` that allows users to control LLMs programmatically. It stays as performant as possible while always being up to date—any model that works on [`llama.cpp`](https://github.com/ggerganov/llama.cpp) should work with this library as well.  
+`LLM.swift` started as a lightweight abstraction layer over [`llama.cpp`](https://github.com/ggerganov/llama.cpp), and has evolved into a comprehensive Swift library with advanced features like `Generatable` that allow users to control LLMs programmatically. It stays as performant as possible while always being up to date—any model that works on [`llama.cpp`](https://github.com/ggerganov/llama.cpp) should work with this library as well.  
 
 The core implementation is in `LLM.swift`, making it easy to understand and extend the library for your specific needs.
 
@@ -361,4 +387,3 @@ The `Embeddings` struct provides:
 - `compare(with:)` - Computes cosine similarity between two embeddings (0.0 to 1.0)
 - `findMostSimilar(in:)` - Returns the most similar embedding from a set of candidates
 - `Equatable` conformance for direct comparison
-

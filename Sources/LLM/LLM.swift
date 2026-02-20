@@ -1,6 +1,5 @@
 import Foundation
 import llama
-@_exported import LLMMacros
 
 public enum ThinkingMode: Sendable {
     case none

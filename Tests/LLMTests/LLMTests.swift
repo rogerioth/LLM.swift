@@ -2,6 +2,72 @@ import Testing
 import Foundation
 @testable import LLM
 
+private indirect enum TestSchema {
+    case string
+    case integer
+    case number
+    case boolean
+    case array(TestSchema)
+    case object(properties: [String: TestSchema], required: [String])
+    case enumeration([String])
+    case generated(Generatable.Type)
+
+    fileprivate func asJSONObject() -> Any {
+        switch self {
+        case .string:
+            return ["type": "string"]
+        case .integer:
+            return ["type": "integer"]
+        case .number:
+            return ["type": "number"]
+        case .boolean:
+            return ["type": "boolean"]
+        case .array(let items):
+            return [
+                "type": "array",
+                "items": items.asJSONObject()
+            ]
+        case .object(let properties, let required):
+            return [
+                "type": "object",
+                "properties": properties.mapValues { $0.asJSONObject() },
+                "required": required
+            ]
+        case .enumeration(let values):
+            return [
+                "type": "string",
+                "enum": values
+            ]
+        case .generated(let type):
+            guard
+                let data = type.jsonSchema.data(using: .utf8),
+                let object = try? JSONSerialization.jsonObject(with: data)
+            else {
+                return [:]
+            }
+            return object
+        }
+    }
+
+    fileprivate var jsonString: String {
+        let object = asJSONObject()
+        guard JSONSerialization.isValidJSONObject(object) else { return "{}" }
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+            let json = String(data: data, encoding: .utf8)
+        else {
+            return "{}"
+        }
+        return json
+    }
+}
+
+extension Generatable {
+    static func schema(_ schema: TestSchema) -> String {
+        schema.jsonString
+    }
+}
+
 final class LLMTests {
     //MARK: Template tests
     let systemPrompt = "You are a human."
@@ -386,14 +452,23 @@ final class LLMTests {
         #expect(thirdResponse != "...")
     }
 
-    //MARK: Generatable macro tests
+    //MARK: Generatable schema tests
     
-    @Generatable
-    struct Person {
+    struct Person: Codable, Generatable {
         let name: String
         let age: Int
         let occupation: String
         let personality: String
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "name": .string,
+                "age": .integer,
+                "occupation": .string,
+                "personality": .string
+            ],
+            required: ["name", "age", "occupation", "personality"]
+        ))
     }
     
     @Test
@@ -419,11 +494,19 @@ final class LLMTests {
         #expect(parsed is [String: Any])
     }
 
-    @Generatable
-    struct Book {
+    struct Book: Codable, Generatable {
         let title: String
         let pages: Int
         let author: String
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "title": .string,
+                "pages": .integer,
+                "author": .string
+            ],
+            required: ["title", "pages", "author"]
+        ))
     }
 
     @Test
@@ -448,10 +531,17 @@ final class LLMTests {
         #expect(parsed is [String: Any])
     }
 
-    @Generatable
-    struct Measurements {
+    struct Measurements: Codable, Generatable {
         let height: Double
         let weight: Float
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "height": .number,
+                "weight": .number
+            ],
+            required: ["height", "weight"]
+        ))
     }
 
     @Test
@@ -475,9 +565,15 @@ final class LLMTests {
         #expect(parsed is [String: Any])
     }
 
-    @Generatable
-    struct Temperature {
+    struct Temperature: Codable, Generatable {
         let degreesInCelcius: Double
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "degreesInCelcius": .number
+            ],
+            required: ["degreesInCelcius"]
+        ))
     }
 
     @Test
@@ -503,9 +599,15 @@ final class LLMTests {
         #expect(parsed is [String: Any])
     }
 
-    @Generatable
-    struct ShoppingList {
+    struct ShoppingList: Codable, Generatable {
         let items: [String]
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "items": .array(.string)
+            ],
+            required: ["items"]
+        ))
     }
 
     @Test
@@ -528,8 +630,7 @@ final class LLMTests {
         #expect(parsed is [String: Any])
     }
 
-    @Generatable
-    enum Color {
+    enum Color: String, Codable, CaseIterable, Generatable {
         case red
         case orange
         case yellow
@@ -538,10 +639,17 @@ final class LLMTests {
         case purple
     }
 
-    @Generatable
-    struct Vegetable {
+    struct Vegetable: Codable, Generatable {
         let color: Color
         let name: String
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "color": .generated(Color.self),
+                "name": .string
+            ],
+            required: ["color", "name"]
+        ))
     }
 
     @Test
@@ -577,17 +685,32 @@ final class LLMTests {
         #expect(parsed is [String: Any])
     }
 
-    @Generatable
-    struct Location {
+    struct Location: Codable, Generatable {
         let latitude: Double
         let longitude: Double
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "latitude": .number,
+                "longitude": .number
+            ],
+            required: ["latitude", "longitude"]
+        ))
     }
 
-    @Generatable 
-    struct Restaurant {
+    struct Restaurant: Codable, Generatable {
         let name: String
         let cuisine: String
         let location: Location
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "name": .string,
+                "cuisine": .string,
+                "location": .generated(Location.self)
+            ],
+            required: ["name", "cuisine", "location"]
+        ))
     }
 
     @Test
@@ -657,10 +780,17 @@ final class LLMTests {
         #expect(location["longitude"] is Double)
     }
 
-    @Generatable
-    struct Garden {
+    struct Garden: Codable, Generatable {
         let vegetables: [Vegetable]
         let totalPlants: Int
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "vegetables": .array(.generated(Vegetable.self)),
+                "totalPlants": .integer
+            ],
+            required: ["vegetables", "totalPlants"]
+        ))
     }
 
     @Test
@@ -696,12 +826,21 @@ final class LLMTests {
         }
     }
 
-    @Generatable
-    struct Profile {
+    struct Profile: Codable, Generatable {
         let name: String
         let age: Int
         let bio: String?
         let nickname: String?
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "name": .string,
+                "age": .integer,
+                "bio": .string,
+                "nickname": .string
+            ],
+            required: ["name", "age"]
+        ))
     }
 
     @Test
@@ -748,31 +887,55 @@ final class LLMTests {
         #expect(parsed["age"] is Int)
     }
     
-    @Generatable
-    struct Address {
+    struct Address: Codable, Generatable {
         let street: String
         let city: String
         let zipCode: String
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "street": .string,
+                "city": .string,
+                "zipCode": .string
+            ],
+            required: ["street", "city", "zipCode"]
+        ))
     }
     
-    @Generatable
-    enum Priority {
+    enum Priority: String, Codable, CaseIterable, Generatable {
         case low, medium, high
     }
     
-    @Generatable
-    struct Task {
+    struct Task: Codable, Generatable {
         let title: String
         let priority: Priority
         let assignee: Person
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "title": .string,
+                "priority": .generated(Priority.self),
+                "assignee": .generated(Person.self)
+            ],
+            required: ["title", "priority", "assignee"]
+        ))
     }
     
-    @Generatable
-    struct Project {
+    struct Project: Codable, Generatable {
         let name: String
         let tasks: [Task]
         let teamLead: Person
         let office: Address
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "name": .string,
+                "tasks": .array(.generated(Task.self)),
+                "teamLead": .generated(Person.self),
+                "office": .generated(Address.self)
+            ],
+            required: ["name", "tasks", "teamLead", "office"]
+        ))
     }
     
     @Test
@@ -812,8 +975,9 @@ final class LLMTests {
         #expect(assignee["age"] is Int)
     }
     
-    @Generatable
-    struct EmptyTestStruct { }
+    struct EmptyTestStruct: Codable, Generatable {
+        static let jsonSchema = schema(.object(properties: [:], required: []))
+    }
     
     @Test
     func testEmptyStructJsonSchema() throws {
@@ -826,10 +990,17 @@ final class LLMTests {
         #expect((parsed["required"] as? [String])?.isEmpty == true)
     }
     
-    @Generatable
-    struct AllOptionalProperties {
+    struct AllOptionalProperties: Codable, Generatable {
         let first: Int?
         let second: Int?
+        
+        static let jsonSchema = schema(.object(
+            properties: [
+                "first": .integer,
+                "second": .integer
+            ],
+            required: []
+        ))
     }
     
     @Test
