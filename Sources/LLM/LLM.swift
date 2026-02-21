@@ -22,6 +22,40 @@ public typealias Vocab = OpaquePointer
 /// A chat message consisting of a role and content.
 public typealias Chat = (role: Role, content: String)
 
+public enum LLMLogLevel: Int32, Sendable, CaseIterable {
+    case none = 0
+    case debug = 1
+    case info = 2
+    case warning = 3
+    case error = 4
+    case continuation = 5
+}
+
+public enum LLMLogVerbosity: Int32, Sendable, CaseIterable {
+    case off = 0
+    case error = 1
+    case warning = 2
+    case info = 3
+    case debug = 4
+
+    fileprivate func allows(level: LLMLogLevel) -> Bool {
+        switch self {
+        case .off:
+            return false
+        case .error:
+            return level == .error
+        case .warning:
+            return level == .warning || level == .error
+        case .info:
+            return level == .info || level == .warning || level == .error
+        case .debug:
+            return level == .debug || level == .info || level == .warning || level == .error
+        }
+    }
+}
+
+public typealias LLMLogHandler = @Sendable (_ level: LLMLogLevel, _ message: String) -> Void
+
 
 /// Core actor responsible for thread-safe interactions with the llama.cpp library.
 ///
@@ -1253,7 +1287,12 @@ open class LLM: ObservableObject {
     private var isAvailable = true
     private var input: String = ""
     
-    static var isLogSilenced = false
+    private static let loggingLock = NSLock()
+    private static var loggingInstalled = false
+    private static var loggingVerbosity: LLMLogVerbosity = .off
+    private static var loggingMirrorToStderr = false
+    private static var loggingHandler: LLMLogHandler?
+    private static var lastNativeLogLevel: LLMLogLevel = .info
     
     fileprivate static func ensureInitialized() {
         struct Initialization {
@@ -1262,14 +1301,82 @@ open class LLM: ObservableObject {
             }()
         }
         _ = Initialization.invoke
+        ensureLoggingInstalled()
     }
 
-    static func silenceLogging() {
-        guard !isLogSilenced else { return }
-        isLogSilenced = true
-        let noopCallback: @convention(c) (ggml_log_level, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void = { _, _, _ in }
-        llama_log_set(noopCallback, nil)
-        ggml_log_set(noopCallback, nil)
+    public static func configureLogging(
+        verbosity: LLMLogVerbosity,
+        mirrorToStderr: Bool = false,
+        handler: LLMLogHandler? = nil
+    ) {
+        loggingLock.lock()
+        loggingVerbosity = verbosity
+        loggingMirrorToStderr = mirrorToStderr
+        loggingHandler = handler
+        installLoggingCallbackIfNeededLocked()
+        loggingLock.unlock()
+    }
+
+    private static func ensureLoggingInstalled() {
+        loggingLock.lock()
+        installLoggingCallbackIfNeededLocked()
+        loggingLock.unlock()
+    }
+
+    private static func installLoggingCallbackIfNeededLocked() {
+        guard !loggingInstalled else { return }
+        llama_log_set(nativeLogCallback, nil)
+        ggml_log_set(nativeLogCallback, nil)
+        loggingInstalled = true
+    }
+
+    private static let nativeLogCallback: @convention(c) (ggml_log_level, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void = { level, text, _ in
+        guard let text else { return }
+        let message = String(cString: text)
+
+        var handler: LLMLogHandler?
+        var shouldEmit = false
+        var shouldMirrorToStderr = false
+        var resolvedLevel: LLMLogLevel = .info
+
+        loggingLock.lock()
+        let incomingLevel = mapLogLevel(level)
+        if incomingLevel == .continuation {
+            resolvedLevel = lastNativeLogLevel
+        } else {
+            resolvedLevel = incomingLevel
+            lastNativeLogLevel = incomingLevel
+        }
+
+        shouldEmit = loggingVerbosity.allows(level: resolvedLevel)
+        shouldMirrorToStderr = loggingMirrorToStderr && shouldEmit
+        handler = loggingHandler
+        loggingLock.unlock()
+
+        if shouldEmit {
+            handler?(resolvedLevel, message)
+        }
+        if shouldMirrorToStderr {
+            fputs(message, stderr)
+            fflush(stderr)
+        }
+    }
+
+    private static func mapLogLevel(_ level: ggml_log_level) -> LLMLogLevel {
+        switch level {
+        case GGML_LOG_LEVEL_DEBUG:
+            return .debug
+        case GGML_LOG_LEVEL_INFO:
+            return .info
+        case GGML_LOG_LEVEL_WARN:
+            return .warning
+        case GGML_LOG_LEVEL_ERROR:
+            return .error
+        case GGML_LOG_LEVEL_CONT:
+            return .continuation
+        default:
+            return .none
+        }
     }
     
     
@@ -1286,7 +1393,7 @@ open class LLM: ObservableObject {
         historyLimit: Int = 8,
         maxTokenCount: Int32 = 2048
     ) {
-        LLM.silenceLogging()
+        LLM.ensureInitialized()
         self.path = path.cString(using: .utf8)!
         self.seed = seed
         self.topK = topK
