@@ -22,6 +22,56 @@ public typealias Vocab = OpaquePointer
 /// A chat message consisting of a role and content.
 public typealias Chat = (role: Role, content: String)
 
+/// Counts sampled model tokens, including tokens hidden by thinking-mode
+/// rendering. Text chunks and Unicode characters are not token boundaries.
+struct GenerationTokenBudget {
+    let maximum: Int?
+    private(set) var sampledCount = 0
+
+    init(maximum: Int?) {
+        self.maximum = maximum.map { max(0, $0) }
+    }
+
+    var canSample: Bool {
+        maximum.map { sampledCount < $0 } ?? true
+    }
+
+    mutating func recordSample() {
+        if sampledCount < Int.max { sampledCount += 1 }
+    }
+}
+
+struct GenerationPromptPlan {
+    let history: [Chat]
+    let prompt: String
+    let effectiveMaxOutputTokens: Int
+}
+
+enum GenerationPromptPlanner {
+    static func plan(
+        input: String, history: [Chat], thinking: ThinkingMode,
+        requestedMaxOutputTokens: Int,
+        preprocess: (String, [Chat], ThinkingMode) -> String,
+        availableOutputTokens: (String) async -> Int
+    ) async -> GenerationPromptPlan {
+        let requested = max(0, requestedMaxOutputTokens)
+        var retainedHistory = history
+        var prompt = preprocess(input, retainedHistory, thinking)
+        var capacity = await availableOutputTokens(prompt)
+        while capacity < requested && !retainedHistory.isEmpty {
+            // Chat history is appended in user/assistant pairs. Keep the
+            // newest turns and always preserve the current user input.
+            retainedHistory.removeFirst(min(2, retainedHistory.count))
+            prompt = preprocess(input, retainedHistory, thinking)
+            capacity = await availableOutputTokens(prompt)
+        }
+        return GenerationPromptPlan(
+            history: retainedHistory, prompt: prompt,
+            effectiveMaxOutputTokens: min(requested, max(0, capacity))
+        )
+    }
+}
+
 public enum LLMLogLevel: Int32, Sendable, CaseIterable {
     case none = 0
     case debug = 1
@@ -104,6 +154,17 @@ public actor LLMCore {
     private var debugLastGeneratedTokens: [Token] = []
     
     private var sampler: UnsafeMutablePointer<llama_sampler>?
+
+    public var contextWindowTokens: Int { maxTokenCount }
+
+    /// Mirrors prepareContext's token count before decoding. Callers can
+    /// reserve room for an answer instead of filling the KV cache with old
+    /// transcript turns and leaving the model no space to respond.
+    func availableOutputTokens(for input: String) -> Int {
+        var tokens = encode(input)
+        if tokens.last == nullToken { tokens.removeLast() }
+        return max(0, maxTokenCount - Int(currentTokenCount) - tokens.count)
+    }
     
     func setParameters(seed: UInt32? = nil, topK: Int32? = nil, topP: Float? = nil, temp: Float? = nil, repeatPenalty: Float? = nil, repetitionLookback: Int32? = nil) {
         if let seed { self.seed = seed }
@@ -351,15 +412,18 @@ public actor LLMCore {
         llama_memory_seq_rm(llama_get_memory(context), -1, -1, -1)
     }
     
-    func generateResponseStream(from input: String, thinking: ThinkingMode = .none) -> AsyncStream<String> {
-        generateResponseStreamWithThinking(from: input, thinking: thinking).response
+    func generateResponseStream(from input: String, thinking: ThinkingMode = .none,
+                                maxOutputTokens: Int? = nil) -> AsyncStream<String> {
+        generateResponseStreamWithThinking(from: input, thinking: thinking,
+                                           maxOutputTokens: maxOutputTokens).response
     }
     
     func generateThinkingStream(from input: String) -> AsyncStream<String> {
         generateResponseStreamWithThinking(from: input, thinking: .enabled).thinking
     }
     
-    func generateResponseStreamWithThinking(from input: String, thinking thinkingMode: ThinkingMode = .none) -> (thinking: AsyncStream<String>, response: AsyncStream<String>) {
+    func generateResponseStreamWithThinking(from input: String, thinking thinkingMode: ThinkingMode = .none,
+                                            maxOutputTokens: Int? = nil) -> (thinking: AsyncStream<String>, response: AsyncStream<String>) {
         var thinkingContinuation: AsyncStream<String>.Continuation!
         var responseContinuation: AsyncStream<String>.Continuation!
         
@@ -382,6 +446,7 @@ public actor LLMCore {
             var currentlyInThinkingPhase = thinkingMode == .enabled && startMarker != nil
             var shouldGuaranteeOutput = true
             var pendingText = ""
+            var outputBudget = GenerationTokenBudget(maximum: maxOutputTokens)
             
             func stream(_ text: String) {
                 guard !text.isEmpty else { return }
@@ -431,10 +496,15 @@ public actor LLMCore {
                 pendingText.removeFirst(overflowLength)
             }
             
-            while shouldContinuePredicting && currentTokenCount < Int32(maxTokenCount) {
+            while shouldContinuePredicting && currentTokenCount < Int32(maxTokenCount)
+                    && outputBudget.canSample {
                 let excludedTokens = shouldGuaranteeOutput ? [endToken] : []
                 let token = predictNextToken(excluding: excludedTokens)
                 shouldGuaranteeOutput = false
+                // Count the sampled token before suppressing thinking markers
+                // or buffering text, so hidden reasoning consumes the same
+                // finite generation budget as visible output.
+                outputBudget.recordSample()
                 
                 let reachedEndOfGeneration = token == endToken
                 
@@ -455,7 +525,7 @@ public actor LLMCore {
                     finishAllStreams()
                     return
                 }
-                
+
                 pendingText += decode(token)
                 
                 let detectingThinkingMarkers = thinkingMode != .none
@@ -1280,6 +1350,9 @@ open class LLM: ObservableObject {
     }
     
     public var historyLimit: Int
+    /// The answer budget after clamping to the current model's context.
+    /// `nil` means the caller did not request a per-answer limit.
+    public private(set) var effectiveMaxOutputTokens: Int? = nil
     public var path: [CChar]
     
     public let core: LLMCore
@@ -1573,12 +1646,26 @@ open class LLM: ObservableObject {
     }
     
     public func getCompletion(from input: borrowing String) async -> String {
+        await getCompletion(from: input, maxOutputTokens: nil)
+    }
+
+    public func getCompletion(from input: borrowing String, maxOutputTokens: Int?) async -> String {
         guard isAvailable else { return "LLM is being used" }
         
         isAvailable = false
         defer { isAvailable = true }
         
-        let response = await core.generateResponseStream(from: input)
+        let effectiveBudget: Int?
+        if let maxOutputTokens {
+            await core.resetContext()
+            let capacity = await core.availableOutputTokens(for: input)
+            effectiveBudget = min(max(0, maxOutputTokens), capacity)
+        } else {
+            effectiveBudget = nil
+        }
+        effectiveMaxOutputTokens = effectiveBudget
+        let response = await core.generateResponseStream(from: input,
+                                                         maxOutputTokens: effectiveBudget)
         var output = ""
         
         for await content in response {
@@ -1589,15 +1676,26 @@ open class LLM: ObservableObject {
     }
     
     public func respond(to input: String, thinking: ThinkingMode = .none, with makeOutputFrom: @escaping (AsyncStream<String>) async -> String) async {
+        await respond(to: input, thinking: thinking, maxOutputTokens: nil, with: makeOutputFrom)
+    }
+
+    public func respond(to input: String, thinking: ThinkingMode = .none,
+                        maxOutputTokens: Int?,
+                        with makeOutputFrom: @escaping (AsyncStream<String>) async -> String) async {
         guard isAvailable else { return }
         
         isAvailable = false
         defer { isAvailable = true }
         
         self.input = input
-        let processedInput = preprocess(input, history, thinking)
+        let (processedInput, effectiveBudget) = await preparedPrompt(
+            for: input, thinking: thinking, maxOutputTokens: maxOutputTokens
+        )
+        effectiveMaxOutputTokens = effectiveBudget
         
-        let response = await core.generateResponseStream(from: processedInput, thinking: thinking)
+        let response = await core.generateResponseStream(
+            from: processedInput, thinking: thinking, maxOutputTokens: effectiveBudget
+        )
         let output = await makeOutputFrom(response)
         
         history += [(.user, input), (.bot, output)]
@@ -1610,15 +1708,25 @@ open class LLM: ObservableObject {
     }
     
     open func respond(to input: String, thinking: ThinkingMode = .none) async {
+        await respond(to: input, thinking: thinking, maxOutputTokens: nil)
+    }
+
+    open func respond(to input: String, thinking: ThinkingMode = .none,
+                      maxOutputTokens: Int?) async {
         guard isAvailable else { return }
         
         isAvailable = false
         defer { isAvailable = true }
         
         self.input = input
-        let processedInput = preprocess(input, history, thinking)
+        let (processedInput, effectiveBudget) = await preparedPrompt(
+            for: input, thinking: thinking, maxOutputTokens: maxOutputTokens
+        )
+        effectiveMaxOutputTokens = effectiveBudget
         
-        let (thinkingStream, responseStream) = await core.generateResponseStreamWithThinking(from: processedInput, thinking: thinking)
+        let (thinkingStream, responseStream) = await core.generateResponseStreamWithThinking(
+            from: processedInput, thinking: thinking, maxOutputTokens: effectiveBudget
+        )
         
         await setOutput(to: "")
         await setThinking(to: "")
@@ -1651,6 +1759,28 @@ open class LLM: ObservableObject {
         }
         
         postprocess(output)
+    }
+
+    private func preparedPrompt(for input: String, thinking: ThinkingMode,
+                                maxOutputTokens: Int?) async -> (String, Int?) {
+        guard let maxOutputTokens else {
+            return (preprocess(input, history, thinking), nil)
+        }
+
+        // An explicit answer budget repacks the transcript into a fresh KV
+        // context. The previous turn's KV tokens must not be counted again
+        // alongside the history that the chat template already includes.
+        await core.resetContext()
+        let plan = await GenerationPromptPlanner.plan(
+            input: input, history: history, thinking: thinking,
+            requestedMaxOutputTokens: maxOutputTokens,
+            preprocess: preprocess,
+            availableOutputTokens: { [core] prompt in
+                await core.availableOutputTokens(for: prompt)
+            }
+        )
+        history = plan.history
+        return (plan.prompt, plan.effectiveMaxOutputTokens)
     }
     
     public func encode(_ text: borrowing String, shouldAddBOS: Bool = true) async -> [Token] {

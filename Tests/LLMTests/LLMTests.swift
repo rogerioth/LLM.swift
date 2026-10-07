@@ -69,6 +69,55 @@ extension Generatable {
 }
 
 final class LLMTests {
+    @Test
+    func sampledTokenBudgetStopsAtExactBoundary() {
+        var budget = GenerationTokenBudget(maximum: 3)
+        #expect(budget.canSample)
+        budget.recordSample() // May become a suppressed thinking token.
+        budget.recordSample()
+        #expect(budget.canSample)
+        budget.recordSample()
+        #expect(!budget.canSample)
+        #expect(budget.sampledCount == 3)
+    }
+
+    @Test
+    func unlimitedAndZeroTokenBudgetsRetainExpectedBehavior() {
+        var unlimited = GenerationTokenBudget(maximum: nil)
+        for _ in 0..<10 { unlimited.recordSample() }
+        #expect(unlimited.canSample)
+        #expect(!GenerationTokenBudget(maximum: 0).canSample)
+        #expect(!GenerationTokenBudget(maximum: -4).canSample)
+    }
+
+    @Test
+    func outputHeadroomDropsOldestTurnsBeforeClamping() async {
+        let history: [Chat] = [
+            (.user, "aaaaa"), (.bot, "bbbbb"),
+            (.user, "c"), (.bot, "d")
+        ]
+        let preprocess: (String, [Chat], ThinkingMode) -> String = { input, history, _ in
+            history.map { $0.content }.joined() + input
+        }
+        let capacity: (String) async -> Int = { max(0, 20 - $0.count) }
+        let plan = await GenerationPromptPlanner.plan(
+            input: "e", history: history, thinking: .none,
+            requestedMaxOutputTokens: 8, preprocess: preprocess,
+            availableOutputTokens: capacity
+        )
+        #expect(plan.history.map { $0.content } == ["c", "d"])
+        #expect(plan.prompt == "cde")
+        #expect(plan.effectiveMaxOutputTokens == 8)
+
+        let clamped = await GenerationPromptPlanner.plan(
+            input: String(repeating: "x", count: 17), history: [], thinking: .none,
+            requestedMaxOutputTokens: 8, preprocess: preprocess,
+            availableOutputTokens: capacity
+        )
+        #expect(clamped.effectiveMaxOutputTokens == 3)
+        #expect(clamped.prompt == String(repeating: "x", count: 17))
+    }
+
     //MARK: Template tests
     let systemPrompt = "You are a human."
     let userPrompt = "Are you a human or an AI?"
