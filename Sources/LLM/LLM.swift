@@ -318,7 +318,7 @@ public actor LLMCore {
     
     
     func prepareContext(for input: String) -> Bool {
-        guard !input.isEmpty else { return false }
+        guard !input.isEmpty, !stopSignal.isStopped, !Task.isCancelled else { return false }
         
         tokenBuffer.removeAll()
         
@@ -337,7 +337,6 @@ public actor LLMCore {
         currentTokenCount += Int32(initialCount)
         shouldContinuePredicting = true
         lastSampledOutputTokens = 0
-        stopSignal.reset()
         return true
     }
     
@@ -358,7 +357,8 @@ public actor LLMCore {
     }
     
     func predictNextToken(excluding: [Token] = []) -> Token {
-        guard shouldContinuePredicting, currentTokenCount < Int32(maxTokenCount) else {
+        guard shouldContinuePredicting, !stopSignal.isStopped, !Task.isCancelled,
+              currentTokenCount < Int32(maxTokenCount) else {
             return endToken
         }
         
@@ -405,6 +405,10 @@ public actor LLMCore {
     
     nonisolated func stopGeneration() {
         stopSignal.stop()
+    }
+
+    nonisolated func beginGeneration() {
+        stopSignal.reset()
     }
     
     private func injectTokensIntoContext(_ tokens: [Token]) -> Bool {
@@ -1165,7 +1169,8 @@ public actor LLMCore {
     }
     
     private func sampleNextToken(from allowedTokens: Set<Token>) -> Token {
-        guard shouldContinuePredicting, currentTokenCount < Int32(maxTokenCount) else {
+        guard shouldContinuePredicting, !stopSignal.isStopped, !Task.isCancelled,
+              currentTokenCount < Int32(maxTokenCount) else {
             return endToken
         }
         guard let sampler, !allowedTokens.isEmpty else { return endToken }
@@ -1673,6 +1678,7 @@ open class LLM: ObservableObject {
 
     public func getCompletion(from input: borrowing String, maxOutputTokens: Int?) async -> String {
         guard isAvailable else { return "LLM is being used" }
+        core.beginGeneration()
         
         isAvailable = false
         defer { isAvailable = true }
@@ -1737,6 +1743,7 @@ open class LLM: ObservableObject {
     open func respond(to input: String, thinking: ThinkingMode = .none,
                       maxOutputTokens: Int?) async {
         guard isAvailable else { return }
+        core.beginGeneration()
         
         isAvailable = false
         defer { isAvailable = true }
@@ -1821,6 +1828,7 @@ open class LLM: ObservableObject {
         as type: T.Type,
         thinking: ThinkingMode = .none
     ) async throws -> StructuredOutput<T> {
+        core.beginGeneration()
         let schemaPrompt = """
         \(prompt)
         
