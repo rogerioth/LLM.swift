@@ -41,6 +41,18 @@ struct GenerationTokenBudget {
     }
 }
 
+/// The native sampling loop runs synchronously on the core actor. An actor
+/// message cannot interrupt it, so cancellation needs a separately locked
+/// signal that the loop can read between sampled tokens.
+final class GenerationStopSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+
+    func reset() { lock.lock(); stopped = false; lock.unlock() }
+    func stop() { lock.lock(); stopped = true; lock.unlock() }
+    var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
+}
+
 struct GenerationPromptPlan {
     let history: [Chat]
     let prompt: String
@@ -152,6 +164,8 @@ public actor LLMCore {
     private var shouldContinuePredicting = false
     private var currentTokenCount: Int32 = 0
     private var debugLastGeneratedTokens: [Token] = []
+    private let stopSignal = GenerationStopSignal()
+    public private(set) var lastSampledOutputTokens = 0
     
     private var sampler: UnsafeMutablePointer<llama_sampler>?
 
@@ -160,10 +174,13 @@ public actor LLMCore {
     /// Mirrors prepareContext's token count before decoding. Callers can
     /// reserve room for an answer instead of filling the KV cache with old
     /// transcript turns and leaving the model no space to respond.
-    func availableOutputTokens(for input: String) -> Int {
+    func availableOutputTokens(for input: String, thinking: ThinkingMode = .none) -> Int {
         var tokens = encode(input)
         if tokens.last == nullToken { tokens.removeLast() }
-        return max(0, maxTokenCount - Int(currentTokenCount) - tokens.count)
+        // If the model ends while in the thinking phase we inject the end
+        // marker and newline into KV. Leave room for those native tokens too.
+        let markerReserve = thinking == .enabled ? (thinkingEndTokens?.count ?? 0) + 1 : 0
+        return max(0, maxTokenCount - Int(currentTokenCount) - tokens.count - markerReserve)
     }
     
     func setParameters(seed: UInt32? = nil, topK: Int32? = nil, topP: Float? = nil, temp: Float? = nil, repeatPenalty: Float? = nil, repetitionLookback: Int32? = nil) {
@@ -319,6 +336,8 @@ public actor LLMCore {
         
         currentTokenCount += Int32(initialCount)
         shouldContinuePredicting = true
+        lastSampledOutputTokens = 0
+        stopSignal.reset()
         return true
     }
     
@@ -384,8 +403,8 @@ public actor LLMCore {
         return token
     }
     
-    func stopGeneration() {
-        shouldContinuePredicting = false
+    nonisolated func stopGeneration() {
+        stopSignal.stop()
     }
     
     private func injectTokensIntoContext(_ tokens: [Token]) -> Bool {
@@ -496,7 +515,8 @@ public actor LLMCore {
                 pendingText.removeFirst(overflowLength)
             }
             
-            while shouldContinuePredicting && currentTokenCount < Int32(maxTokenCount)
+            while shouldContinuePredicting && !stopSignal.isStopped && !Task.isCancelled
+                    && currentTokenCount < Int32(maxTokenCount)
                     && outputBudget.canSample {
                 let excludedTokens = shouldGuaranteeOutput ? [endToken] : []
                 let token = predictNextToken(excluding: excludedTokens)
@@ -505,6 +525,7 @@ public actor LLMCore {
                 // or buffering text, so hidden reasoning consumes the same
                 // finite generation budget as visible output.
                 outputBudget.recordSample()
+                lastSampledOutputTokens = outputBudget.sampledCount
                 
                 let reachedEndOfGeneration = token == endToken
                 
@@ -1353,6 +1374,7 @@ open class LLM: ObservableObject {
     /// The answer budget after clamping to the current model's context.
     /// `nil` means the caller did not request a per-answer limit.
     public private(set) var effectiveMaxOutputTokens: Int? = nil
+    public private(set) var lastSampledOutputTokens = 0
     public var path: [CChar]
     
     public let core: LLMCore
@@ -1633,7 +1655,7 @@ open class LLM: ObservableObject {
     }
     
     public func stop() {
-        Task { await core.stopGeneration() }
+        core.stopGeneration()
     }
     
     public func reset() {
@@ -1671,6 +1693,7 @@ open class LLM: ObservableObject {
         for await content in response {
             output += content
         }
+        lastSampledOutputTokens = await core.lastSampledOutputTokens
         
         return output
     }
@@ -1748,6 +1771,7 @@ open class LLM: ObservableObject {
                 self.update(nil)
             }
         }
+        lastSampledOutputTokens = await core.lastSampledOutputTokens
         
         let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
         await setOutput(to: trimmedOutput.isEmpty ? "..." : trimmedOutput)
@@ -1776,7 +1800,7 @@ open class LLM: ObservableObject {
             requestedMaxOutputTokens: maxOutputTokens,
             preprocess: preprocess,
             availableOutputTokens: { [core] prompt in
-                await core.availableOutputTokens(for: prompt)
+                await core.availableOutputTokens(for: prompt, thinking: thinking)
             }
         )
         history = plan.history

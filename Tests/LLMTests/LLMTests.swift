@@ -91,6 +91,16 @@ final class LLMTests {
     }
 
     @Test
+    func synchronousGenerationStopSignalInterruptsAndResets() {
+        let signal = GenerationStopSignal()
+        #expect(!signal.isStopped)
+        signal.stop()
+        #expect(signal.isStopped)
+        signal.reset()
+        #expect(!signal.isStopped)
+    }
+
+    @Test
     func outputHeadroomDropsOldestTurnsBeforeClamping() async {
         let history: [Chat] = [
             (.user, "aaaaa"), (.bot, "bbbbb"),
