@@ -259,6 +259,9 @@ public actor LLMCore {
     }
     
     deinit {
+        // Metal may still be copying logits into a host buffer owned by this
+        // context. Drain callbacks before freeing its batch or context.
+        llama_synchronize(context)
         llama_batch_free(batch)
         llama_free(context)
         if let sampler {
@@ -427,6 +430,9 @@ public actor LLMCore {
     }
     
     func resetContext() {
+        // Ending on an output budget can leave the last decode's Metal work
+        // in flight. Its logits must finish before KV/batch memory is reused.
+        llama_synchronize(context)
         currentTokenCount = 0
         tokenBuffer.removeAll()
         shouldContinuePredicting = false
@@ -459,6 +465,9 @@ public actor LLMCore {
                 responseContinuation.finish()
                 return
             }
+            // All exits, including EOS, budget exhaustion and cancellation,
+            // must drain async GPU logits before a caller can reset/release KV.
+            defer { llama_synchronize(context) }
             
             if let sampler { llama_sampler_reset(sampler) }
             
@@ -642,6 +651,7 @@ public actor LLMCore {
     public func generateWithConstraints(from input: String, jsonSchema: String, thinking: ThinkingMode = .suppressed) throws -> String {
         debugLastGeneratedTokens = []
         guard prepareContext(for: input) else { throw LLMError.contextCreationFailed }
+        defer { llama_synchronize(context) }
         
         guard let parsedSchema = parseJSONSchema(jsonSchema) else { throw LLMError.contextCreationFailed }
         if let sampler { llama_sampler_reset(sampler) }
