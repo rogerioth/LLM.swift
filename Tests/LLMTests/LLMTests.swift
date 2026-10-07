@@ -69,6 +69,92 @@ extension Generatable {
 }
 
 final class LLMTests {
+    @Test
+    func sampledTokenBudgetStopsAtExactBoundary() {
+        var budget = GenerationTokenBudget(maximum: 3)
+        #expect(budget.canSample)
+        budget.recordSample() // May become a suppressed thinking token.
+        budget.recordSample()
+        #expect(budget.canSample)
+        budget.recordSample()
+        #expect(!budget.canSample)
+        #expect(budget.sampledCount == 3)
+    }
+
+    @Test
+    func unlimitedAndZeroTokenBudgetsRetainExpectedBehavior() {
+        var unlimited = GenerationTokenBudget(maximum: nil)
+        for _ in 0..<10 { unlimited.recordSample() }
+        #expect(unlimited.canSample)
+        #expect(!GenerationTokenBudget(maximum: 0).canSample)
+        #expect(!GenerationTokenBudget(maximum: -4).canSample)
+    }
+
+    @Test
+    func synchronousGenerationStopSignalInterruptsAndResets() {
+        let signal = GenerationStopSignal()
+        #expect(!signal.isStopped)
+        signal.stop()
+        #expect(signal.isStopped)
+        signal.reset()
+        #expect(!signal.isStopped)
+    }
+
+    // Opt in with LLM_BUDGET_FIXTURE=/absolute/path/to/Qwen3-0.6B-Q4_K_M.gguf.
+    // Budget cutoffs used to leave Metal logits callbacks alive across the
+    // next KV reset, crashing during a later answer or context teardown.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["LLM_BUDGET_FIXTURE"] != nil))
+    func nativeBudgetStopAndReuseDrainsMetal() async throws {
+        let path = try #require(ProcessInfo.processInfo.environment["LLM_BUDGET_FIXTURE"])
+        let llm = try #require(LLM(from: URL(fileURLWithPath: path),
+                                   template: .chatML("You are a helpful assistant."),
+                                   temp: 0.6, maxTokenCount: 8_192))
+        let prompt = "Solve this problem step by step, checking each case carefully: How many integers between 1 and 1000000 have a digit sum of 27 and are divisible by 7? Derive a complete counting method and explain its proof with several worked examples."
+        for budget in [32, 768] {
+            llm.history.removeAll()
+            await llm.respond(to: prompt, maxOutputTokens: budget)
+            #expect(llm.effectiveMaxOutputTokens == budget)
+            #expect(llm.lastSampledOutputTokens == budget)
+        }
+        llm.history.removeAll()
+        let generation = Swift.Task { await llm.respond(to: prompt, maxOutputTokens: 4_096) }
+        try await Swift.Task.sleep(nanoseconds: 1_500_000_000)
+        llm.stop()
+        await generation.value
+        #expect(llm.lastSampledOutputTokens < 4_096)
+        llm.history.removeAll()
+        await llm.respond(to: prompt, maxOutputTokens: 32)
+        #expect(llm.lastSampledOutputTokens == 32)
+    }
+
+    @Test
+    func outputHeadroomDropsOldestTurnsBeforeClamping() async {
+        let history: [Chat] = [
+            (.user, "aaaaa"), (.bot, "bbbbb"),
+            (.user, "c"), (.bot, "d")
+        ]
+        let preprocess: (String, [Chat], ThinkingMode) -> String = { input, history, _ in
+            history.map { $0.content }.joined() + input
+        }
+        let capacity: (String) async -> Int = { max(0, 20 - $0.count) }
+        let plan = await GenerationPromptPlanner.plan(
+            input: "e", history: history, thinking: .none,
+            requestedMaxOutputTokens: 8, preprocess: preprocess,
+            availableOutputTokens: capacity
+        )
+        #expect(plan.history.map { $0.content } == ["c", "d"])
+        #expect(plan.prompt == "cde")
+        #expect(plan.effectiveMaxOutputTokens == 8)
+
+        let clamped = await GenerationPromptPlanner.plan(
+            input: String(repeating: "x", count: 17), history: [], thinking: .none,
+            requestedMaxOutputTokens: 8, preprocess: preprocess,
+            availableOutputTokens: capacity
+        )
+        #expect(clamped.effectiveMaxOutputTokens == 3)
+        #expect(clamped.prompt == String(repeating: "x", count: 17))
+    }
+
     //MARK: Template tests
     let systemPrompt = "You are a human."
     let userPrompt = "Are you a human or an AI?"
