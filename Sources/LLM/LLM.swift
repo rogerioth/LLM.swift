@@ -336,7 +336,6 @@ public actor LLMCore {
         
         currentTokenCount += Int32(initialCount)
         shouldContinuePredicting = true
-        lastSampledOutputTokens = 0
         return true
     }
     
@@ -454,6 +453,7 @@ public actor LLMCore {
         let responseStream = AsyncStream<String> { responseContinuation = $0 }
         
         Task {
+            lastSampledOutputTokens = 0
             guard prepareContext(for: input) else {
                 thinkingContinuation.finish()
                 responseContinuation.finish()
@@ -1679,6 +1679,7 @@ open class LLM: ObservableObject {
     public func getCompletion(from input: borrowing String, maxOutputTokens: Int?) async -> String {
         guard isAvailable else { return "LLM is being used" }
         core.beginGeneration()
+        lastSampledOutputTokens = 0
         
         isAvailable = false
         defer { isAvailable = true }
@@ -1712,6 +1713,8 @@ open class LLM: ObservableObject {
                         maxOutputTokens: Int?,
                         with makeOutputFrom: @escaping (AsyncStream<String>) async -> String) async {
         guard isAvailable else { return }
+        core.beginGeneration()
+        lastSampledOutputTokens = 0
         
         isAvailable = false
         defer { isAvailable = true }
@@ -1726,6 +1729,7 @@ open class LLM: ObservableObject {
             from: processedInput, thinking: thinking, maxOutputTokens: effectiveBudget
         )
         let output = await makeOutputFrom(response)
+        lastSampledOutputTokens = await core.lastSampledOutputTokens
         
         history += [(.user, input), (.bot, output)]
         let historyCount = history.count
@@ -1744,6 +1748,7 @@ open class LLM: ObservableObject {
                       maxOutputTokens: Int?) async {
         guard isAvailable else { return }
         core.beginGeneration()
+        lastSampledOutputTokens = 0
         
         isAvailable = false
         defer { isAvailable = true }
